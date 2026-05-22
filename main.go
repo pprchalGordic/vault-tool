@@ -1,31 +1,163 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
+	"strings"
+	"syscall"
+	"unsafe"
 )
+
+var (
+	crypt32                = syscall.NewLazyDLL("crypt32.dll")
+	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
+	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
+)
+
+const cryptProtectLocalMachine = 0x4
+
+type dataBlob struct {
+	cbData uint32
+	pbData *byte
+}
+
+func dpApiEncrypt(data []byte) ([]byte, error) {
+	input := dataBlob{
+		cbData: uint32(len(data)),
+		pbData: &data[0],
+	}
+	var output dataBlob
+
+	r, _, err := procCryptProtectData.Call(
+		uintptr(unsafe.Pointer(&input)),
+		0, 0, 0, 0, cryptProtectLocalMachine,
+		uintptr(unsafe.Pointer(&output)),
+	)
+	if r == 0 {
+		return nil, fmt.Errorf("CryptProtectData failed: %v", err)
+	}
+
+	result := make([]byte, output.cbData)
+	copy(result, unsafe.Slice(output.pbData, output.cbData))
+	syscall.LocalFree(syscall.Handle(unsafe.Pointer(output.pbData)))
+	return result, nil
+}
+
+func dpApiDecrypt(data []byte) ([]byte, error) {
+	input := dataBlob{
+		cbData: uint32(len(data)),
+		pbData: &data[0],
+	}
+	var output dataBlob
+
+	r, _, err := procCryptUnprotectData.Call(
+		uintptr(unsafe.Pointer(&input)),
+		0, 0, 0, 0, cryptProtectLocalMachine,
+		uintptr(unsafe.Pointer(&output)),
+	)
+	if r == 0 {
+		return nil, fmt.Errorf("CryptUnprotectData failed: %v", err)
+	}
+
+	result := make([]byte, output.cbData)
+	copy(result, unsafe.Slice(output.pbData, output.cbData))
+	syscall.LocalFree(syscall.Handle(unsafe.Pointer(output.pbData)))
+	return result, nil
+}
+
+func readPassword() string {
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	getConsoleMode := kernel32.NewProc("GetConsoleMode")
+	setConsoleMode := kernel32.NewProc("SetConsoleMode")
+
+	handle, _ := syscall.GetStdHandle(syscall.STD_INPUT_HANDLE)
+	var oldMode uint32
+	getConsoleMode.Call(uintptr(handle), uintptr(unsafe.Pointer(&oldMode)))
+
+	const enableEchoInput = 0x0004
+	setConsoleMode.Call(uintptr(handle), uintptr(oldMode&^enableEchoInput))
+
+	var line string
+	fmt.Scanln(&line)
+	fmt.Println()
+
+	setConsoleMode.Call(uintptr(handle), uintptr(oldMode))
+	return line
+}
+
+func encryptDpapi() {
+	fmt.Print("Zadejte heslo: ")
+	secret := readPassword()
+
+	if len(secret) == 0 {
+		fmt.Fprintln(os.Stderr, "heslo nesmí být prázdné")
+		os.Exit(1)
+	}
+	fmt.Printf("Uživatel zadal heslo o délce %d znaků\n", len(secret))
+
+	encrypted, err := dpApiEncrypt([]byte(secret))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "šifrování selhalo: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Println("dpapi:" + base64.StdEncoding.EncodeToString(encrypted))
+}
+
+func decryptDpapi(input string) {
+	encoded := strings.TrimPrefix(input, "dpapi:")
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "není ve fromátu base64: %v\n", err)
+		os.Exit(1)
+	}
+
+	decrypted, err := dpApiDecrypt(data)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rozšifrování selhalo: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Println(string(decrypted))
+}
+
+func decryptFile(path string) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nelze načíst soubor %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	decryptDpapi(strings.TrimSpace(string(content)))
+}
 
 func main() {
 	if len(os.Args) == 1 {
 		fmt.Println("vault-tool nástroj pro implementátory")
 		fmt.Println("GORDIC, spol. s r.o. 2026")
-		fmt.Println("v: 1.4")
+		fmt.Println("v: 2.1")
 		fmt.Println()
 		fmt.Println("-encrypt zašifruje heslo do dpapi: tvaru")
 		fmt.Println("-decrypt rozšifruje dpapi: hodnotu")
+		fmt.Println("-decrypt [soubor] rozšifruje dpapi: hodnotu ze souboru")
 		return
 	}
 
 	switch os.Args[1] {
 	case "-encrypt":
-		encryptInteractive()
+		encryptDpapi()
 		return
 	case "-decrypt":
-		path := ""
 		if len(os.Args) > 2 {
-			path = os.Args[2]
+			decryptFile(os.Args[2])
+		} else {
+			fmt.Print("Zadejte dpapi: ")
+			var input string
+			fmt.Scanln(&input)
+			decryptDpapi(input)
 		}
-		decryptInteractive(path)
 		return
 	}
 }
