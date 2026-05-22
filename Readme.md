@@ -19,7 +19,7 @@ rozšifrovat heslo z trezoru (interaktivní způsob) - zeptá se uživatele na `
 .\cron-scheduler.exe -decrypt
 ```
 
-## -dectypt soubor.txt
+## -decrypt soubor.txt
 Rozšifruje heslo z trezoru na windows 2022 (neinteraktivní způsob).
 V souboru `soubor.txt` musí být zašifrované heslo v `dpapi:tvaru`
 
