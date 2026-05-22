@@ -1,26 +1,18 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 func main() {
 	if len(os.Args) == 1 {
-		fmt.Println("cron-scheduler nástroj pro implementátory")
+		fmt.Println("vault-tool nástroj pro implementátory")
 		fmt.Println("GORDIC, spol. s r.o. 2026")
 		fmt.Println("v: 1.4")
 		fmt.Println()
-		fmt.Println("-cron vykoná sekvenci cron příkazů definovanou v config.yaml")
-		fmt.Println("\t určeno pro spouštění z Task Scheduler, ale lze použít i ručně")
 		fmt.Println("-encrypt zašifruje heslo do dpapi: tvaru")
 		fmt.Println("-decrypt rozšifruje dpapi: hodnotu")
-		fmt.Println("-logrotate src dst")
-		fmt.Println("\t provede rotaci logů z adresáře src do dst - zipuje obsah src do dst/src.zip a smaže původní soubory")
 		return
 	}
 
@@ -35,92 +27,5 @@ func main() {
 		}
 		decryptInteractive(path)
 		return
-	case "-cron":
-		cron()
-		return
-	case "-logrotate":
-		LogRotateStart(os.Args[2], os.Args[3])
-		return
 	}
-}
-
-func cron() {
-	now := time.Now()
-	today := now.Format("2006-01-02")
-	dayNum := (int(now.Weekday())+6)%7 + 1 // 1=Po, 2=Út, ..., 7=Ne
-
-	data, err := os.ReadFile("config.yaml")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nelze načíst config.yaml: %v\n", err)
-		os.Exit(1)
-	}
-
-	var config ConfigRoot
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		fmt.Fprintf(os.Stderr, "chybný formát config.yaml: %v\n", err)
-		os.Exit(1)
-	}
-
-	statePath := "state.json"
-	state := make(map[string]string)
-	if stateData, err := os.ReadFile(statePath); err == nil {
-		json.Unmarshal(stateData, &state)
-	}
-
-	for _, job := range config.Jobs {
-		if len(job.Days) > 0 && !containsInt(job.Days, dayNum) {
-			continue
-		}
-
-		runAt, err := time.Parse("15:04", job.RunAt)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "chybný run_at pro %s: %v\n", job.Name, err)
-			continue
-		}
-
-		runToday := time.Date(now.Year(), now.Month(), now.Day(), runAt.Hour(), runAt.Minute(), 0, 0, now.Location())
-
-		if last, ok := state[job.Name]; ok && last == today {
-			continue
-		}
-		if now.Before(runToday) {
-			continue
-		}
-
-		os.MkdirAll("locks", 0755)
-		lockFile := fmt.Sprintf("locks/%s.lock", job.Name)
-		if _, err := os.Stat(lockFile); err == nil {
-			continue
-		}
-
-		os.WriteFile(lockFile, []byte(runToday.Format("02.01.2006 15:04:05.0000")), 0644)
-		os.MkdirAll("logs", 0755)
-		logPath := fmt.Sprintf("logs/%s.log", job.Name)
-
-		func() {
-			defer os.Remove(lockFile)
-
-			logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "nepodařilo se vytvořit log soubor %s: %v\n", logPath, err)
-				return
-			}
-			defer logFile.Close()
-
-			Dispatch(logFile, job)
-			state[job.Name] = today
-		}()
-	}
-
-	stateJSON, _ := json.MarshalIndent(state, "", "  ")
-	os.WriteFile(statePath, stateJSON, 0644)
-}
-
-func containsInt(slice []int, val int) bool {
-	for _, v := range slice {
-		if v == val {
-			return true
-		}
-	}
-	return false
 }
