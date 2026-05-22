@@ -9,14 +9,14 @@ Umí zašifrovat heslo do `dpapi:` tvaru
 Zašifruje heslo do `dpapi:` pro GINIS-vault. 
 
 ```ps1
-.\cron-scheduler.exe -encrypt
+.\vault-tool.exe -encrypt
 ```
 
 ## -decrypt 
 rozšifrovat heslo z trezoru (interaktivní způsob) - zeptá se uživatele na `dpapi:ZASIFROVANO`.
 
 ``` ps1
-.\cron-scheduler.exe -decrypt
+.\vault-tool.exe -decrypt
 ```
 
 ## -decrypt soubor.txt
@@ -25,8 +25,5 @@ V souboru `soubor.txt` musí být zašifrované heslo v `dpapi:tvaru`
 
 Některé windows terminály totiž nepřijmou více než 256 znaků z clipboardu.
 ```ps1
-.\cron-scheduler.exe -decrypt soubor.txt
+.\vault-tool.exe -decrypt soubor.txt
 ```
-
-
-

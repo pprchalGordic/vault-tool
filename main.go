@@ -1,122 +1,68 @@
 package main
 
 import (
+	"bufio"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"strings"
-	"syscall"
-	"unsafe"
+	"vault-tool/console"
+	"vault-tool/dpapi"
 )
 
-var (
-	crypt32                = syscall.NewLazyDLL("crypt32.dll")
-	procCryptProtectData   = crypt32.NewProc("CryptProtectData")
-	procCryptUnprotectData = crypt32.NewProc("CryptUnprotectData")
-)
+var stdin = bufio.NewScanner(os.Stdin)
 
-const cryptProtectLocalMachine = 0x4
-
-type dataBlob struct {
-	cbData uint32
-	pbData *byte
+func readLine() (string, error) {
+	if stdin.Scan() {
+		return stdin.Text(), nil
+	}
+	if err := stdin.Err(); err != nil {
+		return "", err
+	}
+	return "", io.EOF
 }
 
-func dpApiEncrypt(data []byte) ([]byte, error) {
-	input := dataBlob{
-		cbData: uint32(len(data)),
-		pbData: &data[0],
+func encryptDpapi(visual bool) {
+	if visual {
+		fmt.Println("Zadejte heslo: ")
 	}
-	var output dataBlob
-
-	r, _, err := procCryptProtectData.Call(
-		uintptr(unsafe.Pointer(&input)),
-		0, 0, 0, 0, cryptProtectLocalMachine,
-		uintptr(unsafe.Pointer(&output)),
-	)
-	if r == 0 {
-		return nil, fmt.Errorf("CryptProtectData failed: %v", err)
-	}
-
-	result := make([]byte, output.cbData)
-	copy(result, unsafe.Slice(output.pbData, output.cbData))
-	syscall.LocalFree(syscall.Handle(unsafe.Pointer(output.pbData)))
-	return result, nil
-}
-
-func dpApiDecrypt(data []byte) ([]byte, error) {
-	input := dataBlob{
-		cbData: uint32(len(data)),
-		pbData: &data[0],
-	}
-	var output dataBlob
-
-	r, _, err := procCryptUnprotectData.Call(
-		uintptr(unsafe.Pointer(&input)),
-		0, 0, 0, 0, cryptProtectLocalMachine,
-		uintptr(unsafe.Pointer(&output)),
-	)
-	if r == 0 {
-		return nil, fmt.Errorf("CryptUnprotectData failed: %v", err)
-	}
-
-	result := make([]byte, output.cbData)
-	copy(result, unsafe.Slice(output.pbData, output.cbData))
-	syscall.LocalFree(syscall.Handle(unsafe.Pointer(output.pbData)))
-	return result, nil
-}
-
-func readPassword() string {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	getConsoleMode := kernel32.NewProc("GetConsoleMode")
-	setConsoleMode := kernel32.NewProc("SetConsoleMode")
-
-	handle, _ := syscall.GetStdHandle(syscall.STD_INPUT_HANDLE)
-	var oldMode uint32
-	getConsoleMode.Call(uintptr(handle), uintptr(unsafe.Pointer(&oldMode)))
-
-	const enableEchoInput = 0x0004
-	setConsoleMode.Call(uintptr(handle), uintptr(oldMode&^enableEchoInput))
-
-	var line string
-	fmt.Scanln(&line)
-	fmt.Println()
-
-	setConsoleMode.Call(uintptr(handle), uintptr(oldMode))
-	return line
-}
-
-func encryptDpapi() {
-	fmt.Print("Zadejte heslo: ")
-	secret := readPassword()
-
-	if len(secret) == 0 {
-		fmt.Fprintln(os.Stderr, "heslo nesmí být prázdné")
+	secret, err := console.ReadPassword(readLine)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Nepodařilo se načíst vstup: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Uživatel zadal heslo o délce %d znaků\n", len(secret))
 
-	encrypted, err := dpApiEncrypt([]byte(secret))
+	if len(secret) == 0 {
+		fmt.Fprintln(os.Stderr, "Heslo nesmí být prázdné")
+		os.Exit(1)
+	}
+	if visual {
+		fmt.Printf("Uživatel zadal heslo o délce %d znaků\n", len(secret))
+	}
+
+	encrypted, err := dpapi.DpapiEncrypt([]byte(secret))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "šifrování selhalo: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Println()
 	fmt.Println("dpapi:" + base64.StdEncoding.EncodeToString(encrypted))
 }
 
-func decryptDpapi(input string) {
-	encoded := strings.TrimPrefix(input, "dpapi:")
-	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "není ve fromátu base64: %v\n", err)
-		os.Exit(1)
+func decryptDpapi(visual bool) {
+	if visual {
+		fmt.Println("Zadejte zašifrovaná data - včetně dpapi: ")
 	}
 
-	decrypted, err := dpApiDecrypt(data)
+	input, err := readLine()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "rozšifrování selhalo: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Nepodařilo se načíst vstup: %v\n", err)
+		os.Exit(1)
+	}
+	decrypted, err := dpapi.DpapiDecrypt(input)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Rozšifrování selhalo: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -127,36 +73,79 @@ func decryptDpapi(input string) {
 func decryptFile(path string) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nelze načíst soubor %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "Nelze načíst soubor %s: %v\n", path, err)
 		os.Exit(1)
 	}
-	decryptDpapi(strings.TrimSpace(string(content)))
+
+	decrypted, err := dpapi.DpapiDecrypt(string(content))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Nelze rozšifrovat soubor %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	fmt.Println(decrypted)
+}
+
+func printHelp() {
+	fmt.Println("vault-tool nástroj pro implementátory")
+	fmt.Println("GORDIC, spol. s r.o. 2026")
+	fmt.Println("v: 2.2")
+	fmt.Println()
+	fmt.Println("-help    nápověda")
+	fmt.Println("-encrypt zašifruje heslo do dpapi:")
+	fmt.Println("-decrypt rozšifruje dpapi:")
+	fmt.Println("-decrypt [soubor] rozšifruje dpapi: ze souboru")
+	fmt.Println("         některé windows terminály neumí vložit více jak 512 znaků!")
+	fmt.Println()
+	fmt.Println("bez parametrů se spustí interaktivní režim")
+}
+
+func executeInteractive() {
+	fmt.Println("e\t-encrypt zašifruje")
+	fmt.Println("d\t-decrypt rozšifruje")
+	fmt.Println("q\t-konec")
+
+	for {
+		fmt.Println()
+		fmt.Println("Zadejte příkaz: ")
+		line, err := readLine()
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Nepodařilo se načíst vstup: %v\n", err)
+			os.Exit(1)
+		}
+		switch strings.TrimSpace(line) {
+		case "d":
+			decryptDpapi(true)
+			return
+		case "e":
+			encryptDpapi(true)
+			return
+		case "q":
+			return
+		}
+	}
 }
 
 func main() {
 	if len(os.Args) == 1 {
-		fmt.Println("vault-tool nástroj pro implementátory")
-		fmt.Println("GORDIC, spol. s r.o. 2026")
-		fmt.Println("v: 2.1")
-		fmt.Println()
-		fmt.Println("-encrypt zašifruje heslo do dpapi: tvaru")
-		fmt.Println("-decrypt rozšifruje dpapi: hodnotu")
-		fmt.Println("-decrypt [soubor] rozšifruje dpapi: hodnotu ze souboru")
+		executeInteractive()
 		return
 	}
 
 	switch os.Args[1] {
+	case "-help":
+		printHelp()
+		return
 	case "-encrypt":
-		encryptDpapi()
+		encryptDpapi(false)
 		return
 	case "-decrypt":
 		if len(os.Args) > 2 {
 			decryptFile(os.Args[2])
 		} else {
-			fmt.Print("Zadejte dpapi: ")
-			var input string
-			fmt.Scanln(&input)
-			decryptDpapi(input)
+			decryptDpapi(false)
 		}
 		return
 	}
