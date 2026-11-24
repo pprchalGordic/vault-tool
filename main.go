@@ -88,7 +88,7 @@ func decryptFile(path string) {
 func printHelp() {
 	fmt.Println("vault-tool nástroj pro implementátory")
 	fmt.Println("GORDIC, spol. s r.o. 2026")
-	fmt.Println("v: 2.2")
+	fmt.Println("v: 2.4")
 	fmt.Println()
 	fmt.Println("-help    nápověda")
 	fmt.Println("-encrypt zašifruje heslo do dpapi:")
@@ -100,6 +100,7 @@ func printHelp() {
 }
 
 func executeInteractive() {
+	fmt.Println("h\t-help    nápověda")
 	fmt.Println("e\t-encrypt zašifruje")
 	fmt.Println("d\t-decrypt rozšifruje")
 	fmt.Println("q\t-konec")
@@ -116,6 +117,9 @@ func executeInteractive() {
 			os.Exit(1)
 		}
 		switch strings.TrimSpace(line) {
+		case "h":
+			printHelp()
+			return
 		case "d":
 			decryptDpapi(true)
 			return
